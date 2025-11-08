@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <title>ObfuSee: Visualizza e Comprendi l'Offuscamento</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
+  <style>
+    /* Modale */
+    .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.5); display:none; align-items:center; justify-content:center; z-index:9999; }
+    .modal { background:#fff; border-radius:10px; max-width:720px; width:92%; padding:18px 20px; box-shadow:0 10px 30px rgba(0,0,0,.2); }
+    .modal h3 { margin: 8px 0 10px; }
+    .modal h4 { margin: 14px 0 6px; }
+    .modal .row { margin-top:12px; }
+    .modal .actions { display:flex; gap:8px; justify-content:flex-end; margin-top:16px; }
+    .note { font-size:.95em; color:#444; }
+    .tip  { background:#f6ffed; border:1px solid #b7eb8f; padding:10px; border-radius:8px; margin-top:10px; }
+    .warn { background:#fff7e6; border:1px solid #ffe1a8; padding:10px; border-radius:8px; margin-top:10px; }
+
+    /* Evidenziazione aree modificate (contenuto degli <opaque>) */
+    mark.opaque{ background:#f8e74f; padding:0 .15em; border-radius:2px; }
+  </style>
+</head>
+<body>
+
+<h1>ObfuSee: Visualizza e Comprendi l'Offuscamento</h1>
+
+<div class="controls">
+  <div class="control-group">
+    <label for="language">Linguaggio:</label>
+    <select id="language">
+      <option value="c">C</option>
+      <option value="python">Python</option>
+      <option value="java">Java</option>
+      <option value="javascript">JavaScript</option>
+      <option value="rust">Rust</option>
+    </select>
+  </div>
+
+  <div class="control-group">
+    <label for="step">Step:</label>
+    <select id="step">
+      <option value="step1">Step 1 – Offuscamento lessicale</option>
+      <option value="step2">Step 2 – Flusso di controllo</option>
+      <option value="step3">Step 3 – Trasformazione dei dati</option>
+      <option value="step4">Step 4 – Anti-Debugging</option>
+      <option value="step5">Step 5 – Codifica Base64</option>
+      <option value="step6">Step 6 – Cifratura AEAD</option>
+    </select>
+  </div>
+
+  <button id="applica">Applica Step</button>
+  <button id="applica-tutti">Applica tutti gli step</button>
+</div>
+
+<div class="diff-container">
+  <div class="box">
+    <h2>Codice originale</h2>
+    <textarea id="codice" placeholder="Inserisci qui il codice originale..."></textarea>
+  </div>
+
+  <div class="box">
+    <h2 id="output-title">Codice offuscato</h2>
+    <pre><code id="output"></code></pre>
+    <div id="live-explanation" class="live-explanation"></div>
+  </div>
+
+  <div class="box info" id="history-box">
+    <h2>📃 Cronologia modifiche</h2>
+    <ul id="full-explanation"></ul>
+  </div>
+</div>
+
+<!-- Modale: scelta protezione stringhe per "Applica tutti" -->
+<div id="modal-backdrop" class="modal-backdrop" aria-hidden="true">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <h3 id="modal-title">Protezione delle stringhe</h3>
+
+    <div class="row" style="margin-top:14px">
+      <label>
+        <input type="radio" name="sp-choice" value="base64" checked>
+        <strong>Base64</strong> – semplice codifica, solo per esempi
+      </label><br>
+      <label>
+        <input type="radio" name="sp-choice" value="aead_server">
+        <strong>AEAD</strong> – cifratura sicura con chiave dal server
+      </label><br>
+      <label>
+        <input type="radio" name="sp-choice" value="none">
+        Nessuna protezione stringhe
+      </label>
+    </div>
+
+    <div class="actions">
+      <button id="modal-cancel">Annulla</button>
+      <button id="modal-confirm">Conferma</button>
+    </div>
+  </div>
+</div>
+
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script>hljs.highlightAll();</script>
+
+<script>
+  function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+
+  async function showModifiche(modifiche, outputCode, spiegazioneBox, fullLogBox, step) {
+    for (let i = 0; i < modifiche.length; i++) {
+      const m = modifiche[i];
+      const regex = new RegExp("\\b" + (m.nuovo || "") + "\\b", "g");
+      if (step === "step1" && m.nuovo && m.origine) {
+        outputCode.innerHTML = outputCode.innerHTML.replace(regex, `<mark title='${m.origine} → ${m.nuovo}'>${m.nuovo}</mark>`);
+      }
+      spiegazioneBox.innerHTML = `<strong>Modifica ${i + 1}</strong>: ${m.descrizione || ""}`;
+      const li = document.createElement("li");
+      li.innerHTML = `(${i + 1}) ${m.descrizione || ""}`;
+      fullLogBox.appendChild(li);
+      hljs.highlightElement(outputCode);
+      await sleep(1200);
+    }
+  }
+
+  // --- APPLICA STEP (immutato: rinomini progressivi per step1; highlight giallo per tutte le aree <opaque>)
+  document.getElementById("applica").addEventListener("click", async () => {
+    const step = document.getElementById("step").value;
+    const codice = document.getElementById("codice").value;
+    const linguaggio = document.getElementById("language").value;
+
+    const formData = new FormData();
+    formData.append("codice", codice);
+    formData.append("linguaggio", linguaggio);
+
+    const res = await fetch("/" + step, { method: "POST", body: formData });
+    const data = await res.json();
+
+    const output = document.getElementById("output");
+    const liveExplanation = document.getElementById("live-explanation");
+    const fullExplanation = document.getElementById("full-explanation");
+
+    document.getElementById("output-title").textContent = "Codice offuscato";
+
+    output.textContent = data.codice_offuscato || "";
+    hljs.highlightElement(output);
+    await sleep(400);
+
+    output.innerHTML = (data.codice_offuscato || "").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+    // ⬇️ trasforma i tag <opaque> in evidenze gialle (senza mostrare i tag)
+    output.innerHTML = output.innerHTML.replace(
+      /&lt;opaque&gt;([\s\S]*?)&lt;\/opaque&gt;/g,
+      '<mark class="opaque">$1</mark>'
+    );
+
+    // re-highlight dopo l'inserimento dei <mark>
+    hljs.highlightElement(output);
+
+    liveExplanation.innerHTML = "";
+    fullExplanation.innerHTML = "";
+    showModifiche(data.modifiche || [], output, liveExplanation, fullExplanation, step);
+  });
+
+  // --- APPLICA TUTTI (mostra subito il risultato finale; highlight giallo per tutte le aree <opaque>)
+  const modalBackdrop = document.getElementById("modal-backdrop");
+  function openModal(){ modalBackdrop.style.display = "flex"; modalBackdrop.setAttribute("aria-hidden","false"); }
+  function closeModal(){ modalBackdrop.style.display = "none"; modalBackdrop.setAttribute("aria-hidden","true"); }
+
+  document.getElementById("applica-tutti").addEventListener("click", openModal);
+  document.getElementById("modal-cancel").addEventListener("click", closeModal);
+
+  document.getElementById("modal-confirm").addEventListener("click", async () => {
+    const choice = document.querySelector('input[name="sp-choice"]:checked').value;
+    closeModal();
+
+    const codice = document.getElementById("codice").value;
+    const linguaggio = document.getElementById("language").value;
+
+    const formData = new FormData();
+    formData.append("codice", codice);
+    formData.append("linguaggio", linguaggio);
+    formData.append("string_protection", choice); // "base64" | "aead_server" | "none"
+
+    const res = await fetch("/applica_tutti", { method: "POST", body: formData });
+    const data = await res.json();
+
+    const output = document.getElementById("output");
+    const liveExplanation = document.getElementById("live-explanation");
+    const fullExplanation = document.getElementById("full-explanation");
+
+    document.getElementById("output-title").textContent = "Codice completo offuscato";
+
+    // Mostra SUBITO il codice finale
+    output.textContent = data.codice_offuscato || "";
+    hljs.highlightElement(output);
+    await sleep(400);
+
+    output.innerHTML = (data.codice_offuscato || "").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+    // ⬇️ trasforma i tag <opaque> in evidenze gialle (senza mostrare i tag)
+    output.innerHTML = output.innerHTML.replace(
+      /&lt;opaque&gt;([\s\S]*?)&lt;\/opaque&gt;/g,
+      '<mark class="opaque">$1</mark>'
+    );
+
+    // re-highlight dopo l'inserimento dei <mark>
+    hljs.highlightElement(output);
+
+    // Log modifiche (come prima)
+    liveExplanation.innerHTML = "";
+    fullExplanation.innerHTML = "";
+    showModifiche(data.modifiche || [], output, liveExplanation, fullExplanation, "all");
+  });
+</script>
+
+</body>
+</html>
